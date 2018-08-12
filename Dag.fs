@@ -15,60 +15,67 @@ module Dag =
     | Func of Lazy<Task<obj>>
 
     type Dag = {
-        ValueKeys : obj array
-        ValueValues : obj array
-        CalcKeys : obj array
-        CalcValueDependencies : int array array
-        CalcCalcDependencies : int array array
-        CalcFunctions : (obj array -> obj array -> obj) array
-        CalcValues : Lazy<Task<obj>> array
+        InputKeys : obj array
+        InputValues : obj array
+        CalculationKeys : obj array
+        CalculationInputs : (int array * int array) array
+        CalculationFunctions : (obj array -> obj array -> obj) array
+        CalculationValues : Lazy<Task<obj>> array
     }
 
-    type Value = CellTypeValue
-    type Function = CellTypeFunction
+    type Input = CellInput
+    type Calculation = CellCalculation
 
     type Cell<'a,'b> = Cell of obj
 
     let empty = {
-        ValueKeys = [||]
-        ValueValues = [||]
-        CalcKeys = [||]
-        CalcValueDependencies = [||]
-        CalcCalcDependencies = [||]
-        CalcFunctions = [||]
-        CalcValues = [||]
+        InputKeys = [||]
+        InputValues = [||]
+        CalculationKeys = [||]
+        CalculationInputs = [||]
+        CalculationFunctions = [||]
+        CalculationValues = [||]
     }
 
-    let add (d:Dag) (v:'a) : Dag * Cell<'a, Value> =
+    let add (d:Dag) (v:'a) : Dag * Cell<'a, Input> =
         let key = obj()
         let dag = {
           d with
-            ValueKeys = append d.ValueKeys key
-            ValueValues = append d.ValueValues (box v)
+            InputKeys = append d.InputKeys key
+            InputValues = append d.InputValues (box v)
         }
         dag, Cell key
 
-    let getValue (d:Dag) (Cell key:Cell<'a,Value>) : 'a =
-        let i = Array.findIndex ((=)key) d.ValueKeys
-        d.ValueValues.[i] :?> 'a
+    let getValue (d:Dag) (Cell key:Cell<'a,Input>) : 'a =
+        let i = Array.findIndex ((=)key) d.InputKeys
+        d.InputValues.[i] :?> 'a
 
-    let getResult (d:Dag) (Cell key:Cell<'a,Function>) : Task<'a> =
-        let i = Array.findIndex ((=)key) d.CalcKeys
-        d.CalcValues.[i].Value.ContinueWith(fun (o:Task<obj>) -> o.Result :?> 'a)
+    // let add1 (d:Dag) (f:'a->'b) (Cell dKey:Cell<'a,'t>) : Dag * Cell<'b, Calculation> =
+    //     let key = obj()
+    //     let inputs = if typeof<'t> = typeof<Calculation> then
+    //                     [||],[|Array.findIndex ((=)dKey) d.CalculationKeys|]
+    //                  else [|Array.findIndex ((=)dKey) d.InputKeys|],[||]
+    //     let calc =
+    //         fun 
+    //     let dag = {
+    //         d with
+    //             CalculationKeys = append d.CalculationKeys key
+    //             CalculationInputs =
+    //                 inputs
+    //                 |> append d.CalculationInputs
+    //     }
+    //     let lf =
+    //         lazy
+    //             let a = getAsync dag a
+    //             a.ContinueWith(fun (o:Task<'a>) -> f o.Result :> obj)
+    //     dag.Values.[dag.Values.Length-1] <- Func lf
+    //     dag, Cell key
 
-//     let add1 (d:Dag) (f:'a->'b) (a:Cell<'a,'t>) : Dag * Cell<'b, Function> =
-//         let key = obj()
-//         let dag = {
-//             d with
-//                 CalcKeys = append d.CalcKeys key
-//                 Values = insertAt d.Values d.Keys.Length (Func null)
-//         }
-//         let lf =
-//             lazy
-//                 let a = getAsync dag a
-//                 a.ContinueWith(fun (o:Task<'a>) -> f o.Result :> obj)
-//         dag.Values.[dag.Values.Length-1] <- Func lf
-//         dag, Cell key
+    let getResult (d:Dag) (Cell key:Cell<'a,Calculation>) : Task<'a> =
+        let i = Array.findIndex ((=)key) d.CalculationKeys
+        d.CalculationValues.[i].Value.ContinueWith(fun (o:Task<obj>) -> o.Result :?> 'a)
+
+
     
 //     let set (d:Dag) (Cell key:Cell<'a,CellTypeValue>) (a:'a) : Dag =
 //         let i = Array.findIndex ((=)key) d.Keys
