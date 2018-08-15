@@ -3,25 +3,21 @@ namespace global
 open System
 open System.Threading.Tasks
 
+type Dag = {
+    InputKeys : obj array
+    InputValues : obj array
+    CalculationKeys : obj array
+    CalculationInputs : (Set<int> * Set<int>) array
+    CalculationFunctions : (Dag -> Task<obj>) array
+    CalculationValues : Lazy<Task<obj>> array
+}
+
 module Dag =
     let private append a v =
         let mutable a = a
         Array.Resize(&a, Array.length a + 1)
         a.[Array.length a - 1] <- v
         a
-
-    type CellValue =
-    | Value of obj
-    | Func of Lazy<Task<obj>>
-
-    type Dag = {
-        InputKeys : obj array
-        InputValues : obj array
-        CalculationKeys : obj array
-        CalculationInputs : (int array * int array) array
-        CalculationFunctions : (obj array -> obj array -> obj) array
-        CalculationValues : Lazy<Task<obj>> array
-    }
 
     type Input = CellInput
     type Calculation = CellCalculation
@@ -37,68 +33,83 @@ module Dag =
         CalculationValues = [||]
     }
 
-    let add (d:Dag) (v:'a) : Dag * Cell<'a, Input> =
+    let add (v:'a) (d:Dag) : Dag * Cell<'a, Input> =
         let key = obj()
-        let dag = {
-          d with
+        { d with
             InputKeys = append d.InputKeys key
             InputValues = append d.InputValues (box v)
-        }
-        dag, Cell key
+        }, Cell key
 
-    let getValue (d:Dag) (Cell key:Cell<'a,Input>) : 'a =
+    let get (Cell key:Cell<'a,Input>) (d:Dag) : 'a =
         let i = Array.findIndex ((=)key) d.InputKeys
         d.InputValues.[i] :?> 'a
 
-    // let add1 (d:Dag) (f:'a->'b) (Cell dKey:Cell<'a,'t>) : Dag * Cell<'b, Calculation> =
-    //     let key = obj()
-    //     let inputs = if typeof<'t> = typeof<Calculation> then
-    //                     [||],[|Array.findIndex ((=)dKey) d.CalculationKeys|]
-    //                  else [|Array.findIndex ((=)dKey) d.InputKeys|],[||]
-    //     let calc =
-    //         fun 
-    //     let dag = {
-    //         d with
-    //             CalculationKeys = append d.CalculationKeys key
-    //             CalculationInputs =
-    //                 inputs
-    //                 |> append d.CalculationInputs
-    //     }
-    //     let lf =
-    //         lazy
-    //             let a = getAsync dag a
-    //             a.ContinueWith(fun (o:Task<'a>) -> f o.Result :> obj)
-    //     dag.Values.[dag.Values.Length-1] <- Func lf
-    //     dag, Cell key
+    let set (Cell key:Cell<'a,Input>) (a:'a) (d:Dag) : Dag =
+        let i = Array.findIndex ((=)key) d.InputKeys
+        if d.InputValues.[i] :?> 'a = a then d
+        else
+            let dirtyCalcs =
+                Seq.fold (fun (j,s) (inputs,calcInputs) ->
+                    if Set.contains i inputs || Set.intersect s calcInputs |> Set.isEmpty |> not then
+                        (j+1),Set.add j s
+                    else
+                        (j+1),s
+                ) (0,Set.empty) d.CalculationInputs
+                |> snd
 
-    let getResult (d:Dag) (Cell key:Cell<'a,Calculation>) : Task<'a> =
+            let vs = Array.copy d.InputValues
+            vs.[i] <- box a
+
+            if Set.isEmpty dirtyCalcs then
+                { d with
+                    InputValues = vs
+                }
+            else
+                let calcValues = Array.copy d.CalculationValues
+                let dag = {
+                    d with
+                        InputValues = vs
+                        CalculationValues = calcValues
+                }
+                Set.iter (fun i ->
+                    let calc = d.CalculationFunctions.[i]
+                    calcValues.[i] <- lazy calc dag
+                ) dirtyCalcs
+                dag
+
+    let getAsync (Cell key:Cell<'a,Calculation>) (d:Dag) : Task<'a> =
         let i = Array.findIndex ((=)key) d.CalculationKeys
         d.CalculationValues.[i].Value.ContinueWith(fun (o:Task<obj>) -> o.Result :?> 'a)
 
+    let add1 (f:'a->'b) (Cell dKey:Cell<'a,'t>) (d:Dag) : Dag * Cell<'b,Calculation> =
+        let isCalcInput = typeof<'t> = typeof<Calculation>
+        let i =
+            if isCalcInput then d.CalculationKeys else d.InputKeys
+            |> Array.findIndex ((=)dKey)
+        let calc =
+            if isCalcInput then
+                fun (d:Dag) ->
+                    d.CalculationValues.[i].Value.ContinueWith(fun (o:Task<obj>) -> o.Result :?> 'a |> f |> box)
+            else
+                fun (d:Dag) ->
+                    Task.Run(fun () -> d.InputValues.[i] :?> 'a |> f |> box)
+        let key = obj()
+        let dag = {
+            d with
+                CalculationKeys = append d.CalculationKeys key
+                CalculationInputs =
+                    if isCalcInput then Set.empty, Set.singleton i else Set.singleton i, Set.empty
+                    |> append d.CalculationInputs
+                CalculationFunctions = append d.CalculationFunctions calc
+                CalculationValues = append d.CalculationValues null
+        }
+        dag.CalculationValues.[dag.CalculationValues.Length-1] <- lazy calc dag
+        dag, Cell key
 
-    
-//     let set (d:Dag) (Cell key:Cell<'a,CellTypeValue>) (a:'a) : Dag =
-//         let i = Array.findIndex ((=)key) d.Keys
-//         if d.Values.[i]=Value a then d
-//         else
-//             // Reset all Funcs
-//             let vs = Array.copy d.Values
-//             vs.[i] <- Value a
-//             {
-//                 Keys = d.Keys
-//                 Values = vs
-//             }
-
-
-//     let change (before:Dag) (after:Dag) (n:Cell<'a,'t>) : 'a * 'a =
-//         failwith "hi"
-
-// module DagExample =
-//     let test1() =
-//         let dag, cellA = Dag.add Dag.empty 7
-//         let dag, cellB = Dag.add dag "h"
-//         let dag, cellC = Dag.add1 dag (fun s -> s + "i") cellB
-//         let c1 = Dag.get dag cellC
-//         let dag = Dag.set dag cellB "b"
-//         // consider splitting cell into cellvalue and cellfunc
-//         ()
+    let changed (Cell key:Cell<'a,'t>) (before:Dag) (after:Dag) : bool =
+        if typeof<'t> = typeof<Calculation> then
+            let i = Array.findIndex ((=)key) before.CalculationKeys
+            LanguagePrimitives.PhysicalEquality before.CalculationValues.[i] after.CalculationValues.[i] |> not
+        else
+            let i = Array.findIndex ((=)key) before.InputKeys
+            (before.InputValues.[i] :?> 'a) <> (after.InputValues.[i] :?> 'a)

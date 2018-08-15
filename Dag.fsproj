@@ -6,6 +6,6 @@
   <ItemGroup>
     <Compile Include="Dag.fs" />
     <Compile Include="DagTests.fs" />
-    <PackageReference Include="Expecto" Version="8.2.1" />
+    <PackageReference Include="Expecto" Version="8.2.2" />
   </ItemGroup>
 </Project>
