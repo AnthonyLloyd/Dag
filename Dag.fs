@@ -19,6 +19,9 @@ module Dag =
         a.[Array.length a - 1] <- v
         a
 
+    let inline private taskMap (f:'a->'b) (t:Task<'a>) =
+        t.ContinueWith(fun (r:Task<'a>) -> f r.Result)
+
     type Input = CellInput
     type Calculation = CellCalculation
 
@@ -33,18 +36,18 @@ module Dag =
         CalculationValues = [||]
     }
 
-    let add (v:'a) (d:Dag) : Dag * Cell<'a, Input> =
+    let addInput (v:'a) (d:Dag) : Dag * Cell<'a, Input> =
         let key = obj()
         { d with
             InputKeys = append d.InputKeys key
             InputValues = append d.InputValues (box v)
         }, Cell key
 
-    let get (Cell key:Cell<'a,Input>) (d:Dag) : 'a =
+    let getInput (Cell key:Cell<'a,Input>) (d:Dag) : 'a =
         let i = Array.findIndex ((=)key) d.InputKeys
         d.InputValues.[i] :?> 'a
 
-    let set (Cell key:Cell<'a,Input>) (a:'a) (d:Dag) : Dag =
+    let setInput (Cell key:Cell<'a,Input>) (a:'a) (d:Dag) : Dag =
         let i = Array.findIndex ((=)key) d.InputKeys
         if d.InputValues.[i] :?> 'a = a then d
         else
@@ -79,32 +82,7 @@ module Dag =
 
     let getAsync (Cell key:Cell<'a,Calculation>) (d:Dag) : Task<'a> =
         let i = Array.findIndex ((=)key) d.CalculationKeys
-        d.CalculationValues.[i].Value.ContinueWith(fun (o:Task<obj>) -> o.Result :?> 'a)
-
-    let add1 (f:'a->'b) (Cell dKey:Cell<'a,'t>) (d:Dag) : Dag * Cell<'b,Calculation> =
-        let isCalcInput = typeof<'t> = typeof<Calculation>
-        let i =
-            if isCalcInput then d.CalculationKeys else d.InputKeys
-            |> Array.findIndex ((=)dKey)
-        let calc =
-            if isCalcInput then
-                fun (d:Dag) ->
-                    d.CalculationValues.[i].Value.ContinueWith(fun (o:Task<obj>) -> o.Result :?> 'a |> f |> box)
-            else
-                fun (d:Dag) ->
-                    Task.Run(fun () -> d.InputValues.[i] :?> 'a |> f |> box)
-        let key = obj()
-        let dag = {
-            d with
-                CalculationKeys = append d.CalculationKeys key
-                CalculationInputs =
-                    if isCalcInput then Set.empty, Set.singleton i else Set.singleton i, Set.empty
-                    |> append d.CalculationInputs
-                CalculationFunctions = append d.CalculationFunctions calc
-                CalculationValues = append d.CalculationValues null
-        }
-        dag.CalculationValues.[dag.CalculationValues.Length-1] <- lazy calc dag
-        dag, Cell key
+        d.CalculationValues.[i].Value |> taskMap (fun o -> downcast o)
 
     let changed (Cell key:Cell<'a,'t>) (before:Dag) (after:Dag) : bool =
         if typeof<'t> = typeof<Calculation> then
@@ -113,3 +91,52 @@ module Dag =
         else
             let i = Array.findIndex ((=)key) before.InputKeys
             (before.InputValues.[i] :?> 'a) <> (after.InputValues.[i] :?> 'a)
+
+    type 'a Builder = {
+        Dag : Dag
+        Inputs : Set<int> * Set<int>
+        Function : Dag -> Task<'a>
+    }
+
+    let build (d:Dag) f = {
+        Dag = d
+        Inputs = Set.empty, Set.empty
+        Function = fun _ -> Task.FromResult f
+    }
+
+    let apply (Cell key:Cell<'a,'t>) (b:Builder<'a->'b>) =
+        let isCalcInput = typeof<'t> = typeof<Calculation>
+        let i =
+            if isCalcInput then b.Dag.CalculationKeys else b.Dag.InputKeys
+            |> Array.findIndex ((=)key)
+        {
+            Dag = b.Dag
+            Inputs =
+                match isCalcInput, b.Inputs with
+                | true, (iInputs,cInputs) -> iInputs, Set.add i cInputs
+                | false, (iInputs, cInputs) -> Set.add i iInputs, cInputs
+            Function =
+                if isCalcInput then
+                    fun d ->
+                        let fTask = b.Function d
+                        ( d.CalculationValues.[i].Value
+                          |> taskMap (fun o -> fTask |> taskMap (fun f -> downcast o |> f))
+                        ).Unwrap()
+                else
+                    fun d ->
+                        let fTask = b.Function d
+                        fTask |> taskMap (fun f -> downcast d.InputValues.[i] |> f)
+        }
+
+    let addCalculation (b:Builder<'a>) : Dag * Cell<'b,Calculation> =
+        let key = obj()
+        let calc d = taskMap box (b.Function d)
+        let dag = {
+            b.Dag with
+                CalculationKeys = append b.Dag.CalculationKeys key
+                CalculationInputs = append b.Dag.CalculationInputs b.Inputs
+                CalculationFunctions = append b.Dag.CalculationFunctions calc
+                CalculationValues = append b.Dag.CalculationValues null
+        }
+        dag.CalculationValues.[dag.CalculationValues.Length-1] <- lazy calc dag
+        dag, Cell key
