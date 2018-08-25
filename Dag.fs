@@ -6,8 +6,8 @@ open System.Threading.Tasks
 type Dag = private {
     InputValues : obj array
     FunctionInputs : (Set<int> * Set<int>) array
-    FunctionFunctions : (Dag -> Task<obj>) array
-    FunctionValues : Lazy<Task<obj>> array
+    FunctionFunctions : (Dag -> obj) array
+    FunctionValues : Lazy<obj> array
 }
 
 module Dag =
@@ -16,9 +16,6 @@ module Dag =
         Array.Resize(&a, Array.length a + 1)
         a.[Array.length a - 1] <- v
         a
-
-    let inline private taskMap f (t:Task<_>) =
-        t.ContinueWith(fun (r:Task<_>) -> f r.Result)
 
     type Input = private | CellInput
     type Function = private | CellFunction
@@ -70,7 +67,7 @@ module Dag =
                 dag
 
     let getValueTask (Cell key:Cell<'a,Function>) (d:Dag) : Task<'a> =
-        d.FunctionValues.[key].Value |> taskMap (fun o -> downcast o)
+        downcast d.FunctionValues.[key].Value
 
     let changed (Cell key:Cell<'a,'t>) (before:Dag) (after:Dag) : bool =
         if typeof<'t> = typeof<Function> then
@@ -91,6 +88,10 @@ module Dag =
     }
 
     let applyCell (Cell key:Cell<'a,'t>) {Dag=dag;Inputs=inI,inC;Function=bFn} =
+
+        let inline taskMap f (t:Task<_>) =
+            t.ContinueWith(fun (r:Task<_>) -> f r.Result)
+
         let isFunctionCell = typeof<'t> = typeof<Function>
         {
             Dag = dag
@@ -101,8 +102,8 @@ module Dag =
                 if isFunctionCell then
                     fun d ->
                         let fTask = bFn d
-                        ( d.FunctionValues.[key].Value |> taskMap (fun o ->
-                            taskMap (fun f -> downcast o |> f) fTask  )
+                        ( downcast d.FunctionValues.[key].Value
+                          |> taskMap (fun a -> taskMap (fun f -> f a) fTask )
                         ).Unwrap()
                 else
                     fun d ->
@@ -111,7 +112,7 @@ module Dag =
         }
 
     let addFunction ({Dag=dag;Inputs=ips;Function=fn}:'a Builder) =
-        let calc = fn >> taskMap box
+        let calc = fn >> box
         let d = {
             dag with
                 FunctionInputs = append dag.FunctionInputs ips
